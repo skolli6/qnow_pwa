@@ -5,7 +5,7 @@ import {
   removeToken, addWalkInToken, updateVendor, savePushSubscription
 } from '../services/firestoreService'
 import { sendYourTurnNow, sendNearlyThereAlert, send15MinAlert } from '../services/whatsappService'
-import { subscribeToPush, getExistingSubscription } from '../services/pushService'
+import { subscribeToPush, getExistingSubscription, diagnosePush } from '../services/pushService'
 import { useApp } from '../contexts/AppContext'
 
 function timeAgo(ts) {
@@ -55,13 +55,36 @@ export default function VendorDashboard() {
   }, [currentVendor?.id])
 
   async function handleEnablePush() {
+    // Run diagnostics first — results visible in browser console (F12)
+    const diag = await diagnosePush()
+
+    if (!diag.ready) {
+      // Show the first specific issue found
+      const firstIssue = diag.issues[0] || ''
+
+      if (firstIssue.includes('VITE_VAPID_PUBLIC_KEY')) {
+        toast('❌ Push not configured. Admin needs to add VITE_VAPID_PUBLIC_KEY to Vercel env vars.')
+      } else if (firstIssue.includes('DENIED') || firstIssue.includes('denied')) {
+        toast('❌ Notifications blocked. Open browser Settings → Site Settings → Notifications → Allow for this site.')
+      } else if (firstIssue.includes('PushManager') || firstIssue.includes('Chrome')) {
+        toast('❌ Push not supported. Please use Chrome browser on Android.')
+      } else if (firstIssue.includes('Service worker')) {
+        toast('❌ Service worker not ready. Refresh the page and try again.')
+      } else if (firstIssue.includes('short') || firstIssue.includes('invalid')) {
+        toast('❌ VAPID key invalid. Regenerate keys with: npx web-push generate-vapid-keys')
+      } else {
+        toast('❌ Could not enable notifications. Open browser console (F12) for details.')
+      }
+      return
+    }
+
     const sub = await subscribeToPush()
     if (sub) {
       await savePushSubscription(currentVendor.id, sub)
       setPushEnabled(true)
-      toast('✅ Push notifications enabled! You\'ll be alerted when customers join.')
+      toast('✅ Push notifications enabled! You\'ll get a buzz when customers join.')
     } else {
-      toast('⚠ Could not enable notifications. Check browser settings.')
+      toast('❌ Subscription failed. Open browser console (F12) for the exact error, then share it with support.')
     }
   }
 
