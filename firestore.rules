@@ -1,0 +1,50 @@
+// firestore.rules
+// Deploy with:  firebase deploy --only firestore:rules
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── VENDORS ──────────────────────────────────────────────
+    match /vendors/{vendorId} {
+      // Anyone can read approved vendors (for browse screen)
+      allow read: if resource.data.status == 'approved';
+
+      // Vendors can update their own doc (isOpen, etc.) — only if approved
+      // In production add real auth; for MVP we allow writes from app
+      allow write: if true;
+    }
+
+    // ── TOKENS (QUEUE) ───────────────────────────────────────
+    match /tokens/{tokenId} {
+      // Anyone can read their own token (they know the tokenId from session)
+      allow read: if true;
+
+      // Anyone can create a token (joining queue)
+      allow create: if request.resource.data.keys().hasAll(['vendorId','name','mobile','tokenNumber','status']);
+
+      // Updates allowed (status changes, extend, notify flags)
+      allow update: if true;
+
+      // Delete only by vendor (no auth for MVP — rely on app logic)
+      allow delete: if true;
+    }
+
+    // ── USERS ────────────────────────────────────────────────
+    match /users/{mobile} {
+      allow read, write: if true;
+    }
+
+    // ── ACTIVITY LOG ─────────────────────────────────────────
+    match /activityLog/{logId} {
+      allow read:  if true;   // Admin reads via subscription
+      allow write: if true;
+    }
+
+    // ── CONFIG ───────────────────────────────────────────────
+    match /config/{doc} {
+      allow read:  if true;
+      allow write: if false;  // Only writable via Firebase Console
+    }
+  }
+}
