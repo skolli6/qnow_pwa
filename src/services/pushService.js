@@ -17,6 +17,16 @@ function urlBase64ToUint8Array(base64) {
   return Uint8Array.from([...raw].map(c => c.charCodeAt(0)))
 }
 
+async function getServiceWorkerRegistration() {
+  if (!('serviceWorker' in navigator)) return null
+
+  let reg = await navigator.serviceWorker.getRegistration()
+  if (reg) return reg
+
+  const regs = await navigator.serviceWorker.getRegistrations()
+  return regs.find(r => !!(r.active || r.installing || r.waiting)) || null
+}
+
 // ─── DIAGNOSTICS ──────────────────────────────────────────────
 // Call diagnosePush() from browser console to see exactly what's wrong:
 //   import('/src/services/pushService.js').then(m => m.diagnosePush())
@@ -38,7 +48,7 @@ export async function diagnosePush() {
   log(!!key && key.length > 80, `VITE_VAPID_PUBLIC_KEY: ${key ? `present (${key.length} chars)` : 'MISSING — add to Vercel env vars'}`)
 
   if ('serviceWorker' in navigator) {
-    const reg = await navigator.serviceWorker.getRegistration('/sw.js')
+    const reg = await getServiceWorkerRegistration()
     log(!!reg, `SW /sw.js: ${reg ? `registered (${reg.scope})` : 'NOT registered — /sw.js might be returning HTML instead of JS (vercel.json issue)'}`)
 
     if (reg) {
@@ -81,8 +91,8 @@ export async function subscribeToPush() {
     }
   }
 
-  // Get SW registration — use getRegistration (non-blocking) not .ready
-  let reg = await navigator.serviceWorker.getRegistration('/sw.js')
+  // Get SW registration — use a flexible lookup instead of a hard-coded path
+  let reg = await getServiceWorkerRegistration()
 
   if (!reg) {
     // SW not registered yet — register it now and wait
@@ -108,7 +118,7 @@ export async function subscribeToPush() {
   }
 
   // Re-get registration after possible registration
-  reg = await navigator.serviceWorker.getRegistration('/sw.js')
+  reg = await getServiceWorkerRegistration()
   if (!reg) {
     console.error('[Push] Service worker still not registered after attempt.')
     return null
@@ -150,7 +160,7 @@ export async function subscribeToPush() {
 export async function getExistingSubscription() {
   if (!('serviceWorker' in navigator)) return null
   try {
-    const reg = await navigator.serviceWorker.getRegistration('/sw.js')
+    const reg = await getServiceWorkerRegistration()
     if (!reg) return null
     const sub = await reg.pushManager.getSubscription()
     return sub ? sub.toJSON() : null
@@ -163,7 +173,7 @@ export async function getExistingSubscription() {
 
 export async function unsubscribeFromPush() {
   try {
-    const reg = await navigator.serviceWorker.getRegistration('/sw.js')
+    const reg = await getServiceWorkerRegistration()
     if (!reg) return
     const sub = await reg.pushManager.getSubscription()
     if (sub) await sub.unsubscribe()

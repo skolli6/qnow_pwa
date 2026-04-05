@@ -115,11 +115,17 @@ async function notifyVendorPush(vendorId, name, tokenNumber, isWalkIn) {
         actions: [{ action: 'open', title: '📋 View Queue' }],
       }),
     })
+    if (!res.ok) {
+      const error = await res.text().catch(() => res.statusText)
+      console.warn('notifyVendorPush failed:', res.status, error)
+    }
     // Subscription expired — clean up Firestore
     if (res.status === 410) {
       await updateDoc(doc(db, 'vendors', vendorId), { pushSubscription: null })
     }
-  } catch (e) { /* push is optional — never block the main flow */ }
+  } catch (e) {
+    console.warn('notifyVendorPush error:', e)
+  }
 }
 
 export async function addToken(vendorId, { name, mobile, pin }) {
@@ -335,11 +341,17 @@ export async function notifyCustomerPush(tokenId, { title, body, url, tag }) {
         actions: [{ action: 'open', title: '📋 View My Token' }],
       }),
     })
+    if (!res.ok) {
+      const error = await res.text().catch(() => res.statusText)
+      console.warn('notifyCustomerPush failed:', res.status, error)
+    }
     if (res.status === 410) {
       // Subscription expired — clean up
       await updateDoc(doc(db, 'tokens', tokenId), { customerPushSubscription: null })
     }
-  } catch (e) { /* push is optional, WhatsApp is primary */ }
+  } catch (e) {
+    console.warn('notifyCustomerPush error:', e)
+  }
 }
 
 /** Helper used in callNextToken — notify both customer push AND WhatsApp */
