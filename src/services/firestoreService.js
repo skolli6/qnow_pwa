@@ -165,27 +165,19 @@ export async function addWalkInToken(vendorId, name, mobile) {
  * Status filtering done client-side.
  */
 export function subscribeVendorQueue(vendorId, callback) {
-  const q = query(col('tokens'), where('vendorId', '==', vendorId), orderBy('createdAt', 'asc'))
+  const q = query(col('tokens'), where('vendorId', '==', vendorId))
   return onSnapshot(q, snap => {
     const active = snap.docs
       .map(d => ({ id: d.id, ...d.data() }))
       .filter(t => t.status === 'waiting' || t.status === 'serving')
+      .sort((a, b) => {
+        const aMs = a.createdAt?.toMillis?.() || 0
+        const bMs = b.createdAt?.toMillis?.() || 0
+        return aMs - bMs
+      })
     callback(active)
   }, err => {
     console.error('subscribeVendorQueue error:', err)
-    // Fallback: query without orderBy if index missing
-    const q2 = query(col('tokens'), where('vendorId', '==', vendorId))
-    onSnapshot(q2, snap2 => {
-      const active = snap2.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter(t => t.status === 'waiting' || t.status === 'serving')
-        .sort((a, b) => {
-          const aMs = a.createdAt?.toMillis?.() || 0
-          const bMs = b.createdAt?.toMillis?.() || 0
-          return aMs - bMs
-        })
-      callback(active)
-    })
   })
 }
 
