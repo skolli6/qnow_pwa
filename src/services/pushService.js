@@ -1,171 +1,145 @@
 /**
  * pushService.js
- * Web Push subscription management for QNow.
  *
- * REQUIRED ENV VARS (set in Vercel):
- *   VITE_VAPID_PUBLIC_KEY  — browser-side (must have VITE_ prefix)
- *   VAPID_PUBLIC_KEY       — server-side (api/push.js)
- *   VAPID_PRIVATE_KEY      — server-side (api/push.js)
- *   VAPID_EMAIL            — server-side (e.g. mailto:you@gmail.com)
+ * REQUIRED in Vercel Environment Variables:
+ *   VITE_VAPID_PUBLIC_KEY   (browser-visible, must have VITE_ prefix)
+ *   VAPID_PUBLIC_KEY        (server-side, api/push.js)
+ *   VAPID_PRIVATE_KEY       (server-side, api/push.js)
+ *   VAPID_EMAIL             (server-side, e.g. mailto:you@gmail.com)
  *
- * Generate keys with: npx web-push generate-vapid-keys
+ * Generate correct keys: npx web-push generate-vapid-keys
  */
 
-function urlBase64ToUint8Array(base64String) {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
-  const base64  = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
-  const raw     = window.atob(base64)
+function urlBase64ToUint8Array(base64) {
+  const pad = '='.repeat((4 - base64.length % 4) % 4)
+  const b64 = (base64 + pad).replace(/-/g, '+').replace(/_/g, '/')
+  const raw = atob(b64)
   return Uint8Array.from([...raw].map(c => c.charCodeAt(0)))
 }
 
-// ─── DIAGNOSTIC — run this to find out exactly what's failing ─
+// ─── DIAGNOSTICS ──────────────────────────────────────────────
+// Call diagnosePush() from browser console to see exactly what's wrong:
+//   import('/src/services/pushService.js').then(m => m.diagnosePush())
 
 export async function diagnosePush() {
-  const issues = []
-  const ok     = []
+  const results = []
+  const log = (ok, msg) => { results.push({ ok, msg }); console[ok ? 'log' : 'error'](`[Push] ${msg}`) }
 
-  // 1. Browser support
-  if (!('Notification' in window))   issues.push('❌ Notifications API not supported in this browser')
-  else                                ok.push('✅ Notifications API supported')
+  log('Notification' in window,   `Notification API: ${'Notification' in window ? 'supported' : 'NOT supported'}`)
+  log('serviceWorker' in navigator, `ServiceWorker API: ${'serviceWorker' in navigator ? 'supported' : 'NOT supported'}`)
+  log('PushManager' in window,    `PushManager: ${'PushManager' in window ? 'supported' : 'NOT supported — use Chrome on Android'}`)
 
-  if (!('serviceWorker' in navigator)) issues.push('❌ Service workers not supported')
-  else                                 ok.push('✅ Service workers supported')
-
-  if (!('PushManager' in window))    issues.push('❌ Push Manager not supported (use Chrome on Android)')
-  else                                ok.push('✅ Push Manager supported')
-
-  // 2. Permission
   if ('Notification' in window) {
-    const perm = Notification.permission
-    if (perm === 'denied')  issues.push('❌ Notification permission DENIED — user must reset in browser settings')
-    if (perm === 'default') issues.push('⚠ Notification permission not asked yet')
-    if (perm === 'granted') ok.push('✅ Notification permission granted')
+    const p = Notification.permission
+    log(p === 'granted', `Permission: ${p}`)
   }
 
-  // 3. VAPID key
-  const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY
-  if (!vapidKey) {
-    issues.push('❌ VITE_VAPID_PUBLIC_KEY is missing — add it to Vercel environment variables')
-  } else if (vapidKey.length < 80) {
-    issues.push(`❌ VITE_VAPID_PUBLIC_KEY looks too short (${vapidKey.length} chars, expected ~87) — regenerate keys with: npx web-push generate-vapid-keys`)
-  } else {
-    ok.push(`✅ VITE_VAPID_PUBLIC_KEY present (${vapidKey.length} chars)`)
-  }
+  const key = import.meta.env.VITE_VAPID_PUBLIC_KEY
+  log(!!key && key.length > 80, `VITE_VAPID_PUBLIC_KEY: ${key ? `present (${key.length} chars)` : 'MISSING — add to Vercel env vars'}`)
 
-  // 4. Service worker registration
   if ('serviceWorker' in navigator) {
-    try {
-      const reg = await navigator.serviceWorker.getRegistration('/sw.js')
-      if (reg) {
-        ok.push(`✅ Service worker registered (scope: ${reg.scope})`)
-        const sub = await reg.pushManager.getSubscription()
-        if (sub) ok.push('✅ Already subscribed to push')
-        else     ok.push('ℹ Not yet subscribed — subscribe to enable push')
-      } else {
-        issues.push('❌ Service worker /sw.js is NOT registered — check browser console for SW errors')
-      }
-    } catch (e) {
-      issues.push(`❌ Service worker check failed: ${e.message}`)
+    const reg = await navigator.serviceWorker.getRegistration('/sw.js')
+    log(!!reg, `SW /sw.js: ${reg ? `registered (${reg.scope})` : 'NOT registered — /sw.js might be returning HTML instead of JS (vercel.json issue)'}`)
+
+    if (reg) {
+      const sub = await reg.pushManager.getSubscription().catch(() => null)
+      log(true, `Existing subscription: ${sub ? 'YES' : 'none yet'}`)
     }
   }
 
-  console.group('QNow Push Diagnostics')
-  ok.forEach(m => console.log(m))
-  issues.forEach(m => console.warn(m))
-  console.groupEnd()
-
-  return { ok, issues, ready: issues.length === 0 }
+  return results
 }
 
 // ─── SUBSCRIBE ────────────────────────────────────────────────
 
-/**
- * Request push permission and create a subscription.
- * Returns the subscription JSON object, or null on any failure.
- * Logs the specific reason for failure to console.
- */
 export async function subscribeToPush() {
-  // 1. Check browser support
-  if (!('Notification' in window)) {
-    console.error('[Push] Notifications API not supported')
-    return null
-  }
-  if (!('serviceWorker' in navigator)) {
-    console.error('[Push] Service workers not supported')
-    return null
-  }
-  if (!('PushManager' in window)) {
-    console.error('[Push] PushManager not supported — use Chrome on Android')
+
+  // Guard: browser support
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    console.error('[Push] Not supported in this browser. Use Chrome on Android.')
     return null
   }
 
-  // 2. Check VAPID key before asking permission (fail fast)
+  // Guard: VAPID key
   const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY
-  if (!vapidKey) {
-    console.error('[Push] VITE_VAPID_PUBLIC_KEY is not set. Add it to Vercel environment variables.')
-    return null
-  }
-  if (vapidKey.length < 80) {
-    console.error(`[Push] VITE_VAPID_PUBLIC_KEY looks invalid (${vapidKey.length} chars). Regenerate with: npx web-push generate-vapid-keys`)
+  if (!vapidKey || vapidKey.length < 80) {
+    console.error('[Push] VITE_VAPID_PUBLIC_KEY missing or invalid. Add it to Vercel environment variables.')
     return null
   }
 
-  // 3. Request permission
-  let permission = Notification.permission
-  if (permission === 'default') {
-    permission = await Notification.requestPermission()
-  }
-  if (permission !== 'granted') {
-    console.warn(`[Push] Permission ${permission}. User must allow notifications in browser settings.`)
+  // Request permission if not already granted
+  if (Notification.permission === 'denied') {
+    console.error('[Push] Notifications are blocked. User must reset in browser site settings.')
     return null
   }
 
-  // 4. Wait for service worker to be ready
-  let reg
+  if (Notification.permission !== 'granted') {
+    const result = await Notification.requestPermission()
+    if (result !== 'granted') {
+      console.error('[Push] User denied notification permission.')
+      return null
+    }
+  }
+
+  // Get SW registration — use getRegistration (non-blocking) not .ready
+  let reg = await navigator.serviceWorker.getRegistration('/sw.js')
+
+  if (!reg) {
+    // SW not registered yet — register it now and wait
+    console.log('[Push] Registering service worker...')
+    try {
+      reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' })
+      // Wait for it to become active
+      await new Promise((resolve) => {
+        if (reg.active) { resolve(); return }
+        const worker = reg.installing || reg.waiting
+        if (!worker) { resolve(); return }
+        worker.addEventListener('statechange', () => {
+          if (worker.state === 'activated') resolve()
+        })
+        // Fallback resolve after 5 seconds regardless
+        setTimeout(resolve, 5000)
+      })
+    } catch (err) {
+      console.error('[Push] Failed to register SW:', err.message,
+        '— Check that /sw.js is served as JavaScript, not HTML (vercel.json issue)')
+      return null
+    }
+  }
+
+  // Re-get registration after possible registration
+  reg = await navigator.serviceWorker.getRegistration('/sw.js')
+  if (!reg) {
+    console.error('[Push] Service worker still not registered after attempt.')
+    return null
+  }
+
+  // Subscribe to push
   try {
-    reg = await Promise.race([
-      navigator.serviceWorker.ready,
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Service worker ready timeout after 10s')), 10000)
-      ),
-    ])
-  } catch (e) {
-    console.error('[Push] Service worker not ready:', e.message)
-    return null
-  }
-
-  // 5. Subscribe to push
-  try {
-    // Remove any stale subscription first to ensure fresh key alignment
+    // Check for existing valid subscription
     const existing = await reg.pushManager.getSubscription()
     if (existing) {
-      // Validate the existing subscription's application server key matches our VAPID key
-      // If keys changed, we need a fresh subscription
-      try {
-        return existing.toJSON()
-      } catch {
-        await existing.unsubscribe()
-      }
+      console.log('[Push] Using existing subscription.')
+      return existing.toJSON()
     }
 
-    const applicationServerKey = urlBase64ToUint8Array(vapidKey)
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly:      true,
-      applicationServerKey,
+      applicationServerKey: urlBase64ToUint8Array(vapidKey),
     })
 
-    console.log('[Push] ✅ Successfully subscribed to push notifications')
+    console.log('[Push] ✅ Subscribed successfully.')
     return sub.toJSON()
+
   } catch (err) {
-    // Provide specific error messages for common failures
     if (err.name === 'NotAllowedError') {
-      console.error('[Push] Permission denied by system (browser or OS level)')
+      console.error('[Push] Permission denied at OS level. Check phone notification settings.')
+    } else if (err.message?.includes('applicationServerKey') || err.name === 'InvalidAccessError') {
+      console.error('[Push] VAPID key rejected by browser. Regenerate: npx web-push generate-vapid-keys')
     } else if (err.name === 'InvalidStateError') {
-      console.error('[Push] Service worker in invalid state — try refreshing the page')
-    } else if (err.message?.includes('applicationServerKey')) {
-      console.error('[Push] VAPID key format invalid — regenerate with: npx web-push generate-vapid-keys')
+      console.error('[Push] SW in invalid state. Refresh page and try again.')
     } else {
-      console.error('[Push] Subscribe failed:', err.name, err.message)
+      console.error('[Push] Subscribe error:', err.name, '-', err.message)
     }
     return null
   }
@@ -176,7 +150,8 @@ export async function subscribeToPush() {
 export async function getExistingSubscription() {
   if (!('serviceWorker' in navigator)) return null
   try {
-    const reg = await navigator.serviceWorker.ready
+    const reg = await navigator.serviceWorker.getRegistration('/sw.js')
+    if (!reg) return null
     const sub = await reg.pushManager.getSubscription()
     return sub ? sub.toJSON() : null
   } catch {
@@ -187,9 +162,9 @@ export async function getExistingSubscription() {
 // ─── UNSUBSCRIBE ──────────────────────────────────────────────
 
 export async function unsubscribeFromPush() {
-  if (!('serviceWorker' in navigator)) return
   try {
-    const reg = await navigator.serviceWorker.ready
+    const reg = await navigator.serviceWorker.getRegistration('/sw.js')
+    if (!reg) return
     const sub = await reg.pushManager.getSubscription()
     if (sub) await sub.unsubscribe()
   } catch (err) {
@@ -197,15 +172,15 @@ export async function unsubscribeFromPush() {
   }
 }
 
-// ─── SEND PUSH VIA API ────────────────────────────────────────
+// ─── SEND VIA API ─────────────────────────────────────────────
 
-export async function sendPushToVendor(subscription, { title, body, url, tag, requireInteraction, actions }) {
+export async function sendPushToVendor(subscription, payload) {
   if (!subscription?.endpoint) return false
   try {
     const res = await fetch('/api/push', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ subscription, title, body, url, tag, requireInteraction, actions }),
+      body:    JSON.stringify({ subscription, ...payload }),
     })
     if (res.status === 410) return 'expired'
     return res.ok

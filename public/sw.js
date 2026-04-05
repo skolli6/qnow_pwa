@@ -1,80 +1,81 @@
 /**
  * sw.js — QNow Service Worker
  *
- * Handles:
- *  1. Offline caching — app works without internet
- *  2. Push notifications — vendor gets alerted when customer joins
- *  3. Notification click — opens correct screen when tapped
+ * Kept intentionally minimal and reliable.
+ * Main job: handle push notifications and notification clicks.
+ * Caching is best-effort only — never blocks install/activate.
  */
 
-const CACHE_NAME = 'qnow-v1'
-const CACHE_URLS = [
-  '/',
-  '/browse',
-  '/check',
-  '/vendor',
-  '/help',
-]
+const CACHE = 'qnow-v2'
 
-// ─── INSTALL: cache core pages ────────────────────────────────
-self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => {
-      // Cache what we can — failures are non-fatal
-      return cache.addAll(CACHE_URLS).catch(() => {})
-    })
-  )
-  // Activate immediately without waiting
+// ─── INSTALL ──────────────────────────────────────────────────
+// Skip waiting so the new SW activates immediately.
+// Do NOT use cache.addAll() for SPA routes — they aren't real files
+// and can cause the install to fail if fetch errors.
+self.addEventListener('install', () => {
   self.skipWaiting()
 })
 
-// ─── ACTIVATE: clean up old caches ───────────────────────────
+// ─── ACTIVATE ─────────────────────────────────────────────────
+// Take control of all pages immediately.
+// Clean up any old caches from previous versions.
 self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(
-        keys
-          .filter(key => key !== CACHE_NAME)
-          .map(key => caches.delete(key))
-      )
-    )
+    caches.keys()
+      .then(keys => Promise.all(
+        keys.filter(k => k !== CACHE).map(k => caches.delete(k))
+      ))
+      .then(() => self.clients.claim())
   )
-  self.clients.claim()
 })
 
-// ─── FETCH: network first, cache fallback ────────────────────
+// ─── FETCH ────────────────────────────────────────────────────
+// Network first. Cache only real assets (JS, CSS, images).
+// Never intercept API, Firebase, or font requests.
 self.addEventListener('fetch', event => {
-  // Only handle GET requests
-  if (event.request.method !== 'GET') return
+  const { request } = event
 
-  // Skip API calls, Firebase, WhatsApp — always go to network
-  const url = event.request.url
+  // Only handle GET
+  if (request.method !== 'GET') return
+
+  const url = request.url
+
+  // Never intercept — always go direct to network
   if (
     url.includes('/api/') ||
+    url.includes('firestore.googleapis') ||
     url.includes('firebase') ||
     url.includes('graph.facebook') ||
     url.includes('fonts.googleapis') ||
-    url.includes('firestore')
+    url.includes('fonts.gstatic') ||
+    url.includes('identitytoolkit')
   ) return
 
+  // For navigation requests (page loads) — network first, fallback to cache
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request).catch(() => caches.match('/') )
+    )
+    return
+  }
+
+  // For static assets — cache first, then network
   event.respondWith(
-    fetch(event.request)
-      .then(response => {
-        // Save a copy in cache
-        const clone = response.clone()
-        caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone))
+    caches.match(request).then(cached => {
+      if (cached) return cached
+      return fetch(request).then(response => {
+        // Only cache valid successful responses for static assets
+        if (
+          response.ok &&
+          response.type === 'basic' &&
+          (url.includes('.js') || url.includes('.css') || url.includes('.png') || url.includes('.svg'))
+        ) {
+          const clone = response.clone()
+          caches.open(CACHE).then(cache => cache.put(request, clone))
+        }
         return response
-      })
-      .catch(() =>
-        // Network failed — try cache
-        caches.match(event.request).then(cached => {
-          if (cached) return cached
-          // Return offline page for navigation requests
-          if (event.request.mode === 'navigate') {
-            return caches.match('/')
-          }
-        })
-      )
+      }).catch(() => cached) // Return stale cache if network fails
+    })
   )
 })
 
@@ -84,25 +85,19 @@ self.addEventListener('push', event => {
   try {
     data = event.data?.json() || {}
   } catch {
-    data = { title: 'QNow', body: event.data?.text() || 'Queue update' }
+    data = { title: 'QNow', body: event.data?.text() || 'You have a queue update' }
   }
 
-  const title   = data.title || 'QNow'
-  const body    = data.body  || 'You have a queue update'
-  const url     = data.url   || '/vendor/dashboard'
-  const tag     = data.tag   || 'qnow-push'
-  const icon    = '/icons/icon-192.png'
-  const badge   = '/icons/icon-72.png'
-
+  const title = data.title || 'QNow'
   const options = {
-    body,
-    icon,
-    badge,
-    tag,
-    data: { url },
-    vibrate: [200, 100, 200],
+    body:               data.body || 'Queue update',
+    icon:               '/icons/icon-192.png',
+    badge:              '/icons/icon-72.png',
+    tag:                data.tag || 'qnow',
+    data:               { url: data.url || '/' },
+    vibrate:            [200, 100, 200],
     requireInteraction: data.requireInteraction || false,
-    actions: data.actions || [],
+    actions:            data.actions || [],
   }
 
   event.waitUntil(
@@ -114,25 +109,19 @@ self.addEventListener('push', event => {
 self.addEventListener('notificationclick', event => {
   event.notification.close()
 
-  const targetUrl = event.notification.data?.url || '/vendor/dashboard'
+  const targetUrl = event.notification.data?.url || '/'
   const fullUrl   = self.location.origin + targetUrl
 
   event.waitUntil(
-    clients
-      .matchAll({ type: 'window', includeUncontrolled: true })
+    clients.matchAll({ type: 'window', includeUncontrolled: true })
       .then(clientList => {
-        // If app is already open, focus it and navigate
         for (const client of clientList) {
           if (client.url.startsWith(self.location.origin) && 'focus' in client) {
-            client.focus()
             client.navigate(targetUrl)
-            return
+            return client.focus()
           }
         }
-        // App not open — open a new window
-        if (clients.openWindow) {
-          return clients.openWindow(fullUrl)
-        }
+        return clients.openWindow(fullUrl)
       })
   )
 })

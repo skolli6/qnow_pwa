@@ -55,26 +55,22 @@ export default function VendorDashboard() {
   }, [currentVendor?.id])
 
   async function handleEnablePush() {
-    // Run diagnostics first — results visible in browser console (F12)
-    const diag = await diagnosePush()
+    // Run diagnostics and log to console first
+    const results = await diagnosePush()
+    const failed  = results.find(r => !r.ok)
 
-    if (!diag.ready) {
-      // Show the first specific issue found
-      const firstIssue = diag.issues[0] || ''
-
-      if (firstIssue.includes('VITE_VAPID_PUBLIC_KEY')) {
-        toast('❌ Push not configured. Admin needs to add VITE_VAPID_PUBLIC_KEY to Vercel env vars.')
-      } else if (firstIssue.includes('DENIED') || firstIssue.includes('denied')) {
-        toast('❌ Notifications blocked. Open browser Settings → Site Settings → Notifications → Allow for this site.')
-      } else if (firstIssue.includes('PushManager') || firstIssue.includes('Chrome')) {
-        toast('❌ Push not supported. Please use Chrome browser on Android.')
-      } else if (firstIssue.includes('Service worker')) {
-        toast('❌ Service worker not ready. Refresh the page and try again.')
-      } else if (firstIssue.includes('short') || firstIssue.includes('invalid')) {
-        toast('❌ VAPID key invalid. Regenerate keys with: npx web-push generate-vapid-keys')
-      } else {
-        toast('❌ Could not enable notifications. Open browser console (F12) for details.')
-      }
+    if (failed) {
+      const msg = failed.msg
+      if (msg.includes('VITE_VAPID_PUBLIC_KEY'))
+        toast('❌ Push not configured — admin must add VITE_VAPID_PUBLIC_KEY to Vercel and redeploy')
+      else if (msg.includes('blocked') || msg.includes('denied') || msg.includes('Blocked'))
+        toast('❌ Notifications blocked — open browser Site Settings → Notifications → Allow for this site')
+      else if (msg.includes('Chrome') || msg.includes('PushManager'))
+        toast('❌ Push needs Chrome browser on Android — Safari/Firefox not fully supported')
+      else if (msg.includes('NOT registered') || msg.includes('sw.js'))
+        toast('❌ Service worker failed — /sw.js may be returning HTML. Check Vercel logs.')
+      else
+        toast(`❌ ${msg}`)
       return
     }
 
@@ -84,7 +80,7 @@ export default function VendorDashboard() {
       setPushEnabled(true)
       toast('✅ Push notifications enabled! You\'ll get a buzz when customers join.')
     } else {
-      toast('❌ Subscription failed. Open browser console (F12) for the exact error, then share it with support.')
+      toast('❌ Subscription failed — open browser Console (F12) for the exact error')
     }
   }
 
